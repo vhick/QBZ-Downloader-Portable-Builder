@@ -1,49 +1,28 @@
-# QBZ-Downloader Portable Builder — Inspection Edition
+# QBZ Downloader True-Portable Builder v1.0
 
-This is the **first stage only** of building a truly portable QBZ-Downloader.
+This is the **initial Windows build kit**, grounded in the uploaded source inspection for `35b8a42f2517e006cef668124f6def9597ce8757` (version 5.6.3).
 
-It checks a **clean, synchronized fork** of [`ifauzeee/QBZ-Downloader`](https://github.com/ifauzeee/QBZ-Downloader) and produces a source-inspection artifact. It **does not build an EXE or modify the original source**.
+It patches the temporary GitHub checkout only. Your synced fork stays unchanged.
 
-## Why inspect it?
+**Purpose:** redirect Electron userData/sessionData/logs/crash dumps and QBZ-owned TEMP beside the portable EXE, while preserving the existing backend database/key scheme and respecting any saved download path.
 
-Upstream already has an Electron portable executable and uses `PORTABLE_EXECUTABLE_DIR` to put the backend's `QBZ-Data` beside the executable. We need to inspect the remaining Electron browser profile, updater, download destinations, and credential encryption before claiming it is fully portable.
+## Build
 
-## GitHub repositories
+Actions > Build QBZ Downloader True Portable > Run workflow, leave source blank and ref `main`.
 
-- **Clean fork:** `YOUR-USERNAME/QBZ-Downloader`
-- **New inspection builder:** `YOUR-USERNAME/QBZ-Downloader-Portable-Builder`
+The output is `QBZ-Downloader-True-Portable-Windows-x64-<commit>`.
 
-Keep the fork untouched. The builder holds the inspection scripts and, later, the portable source patch.
+## Security and portability caveats
 
-## Run the inspection
+* Save the **entire `QBZ-Data` folder**. Preserve `data/qbz.db`, `data/.secret.key`, and any SQLite WAL/SHM files together.
+* The application's current settings use file-key encryption. Older `safe:` entries encrypted through Windows DPAPI may not survive a Windows reinstall. The patch does not convert credential formats.
+* The portable wrapper temporarily extracts via Windows TEMP; that is not the same as settings in AppData and cannot be wholly redirected by Electron app source.
+* Explicit custom download paths remain unchanged. If moved to a new drive letter, some downloaded-file references may need updating.
+* The first runner build and runtime behavior are **not yet verified**. Check for any residual state in AppData before using it as your sole copy.
+* An upstream change to the settings encryption or source anchors makes the build fail for review.
 
-On the builder repository, open:
+## Future source changes
 
-**Actions → Inspect QBZ-Downloader Portability → Run workflow**
+If the builder turns red after a sync, send the complete GitHub Actions logs and `QBZ-Builder-Diagnostics` artifact for inspection. Do not bypass the patch failure.
 
-Leave the source repository blank (uses your fork), leave branch at `main`, then click **Run workflow**.
-
-After a green result, download **QBZ-Portable-Inspection-<commit>** under **Artifacts** and upload it to ChatGPT.
-
-## No local prerequisites
-
-Python runs on GitHub's temporary Windows runner; **nothing needs to be installed on your computer**. No npm packages are installed in the inspection.
-
-## What does it collect?
-
-- Main Electron process and packaging configuration
-- Path resolution for QBZ-Data, Chromium userData/sessionData/cache
-- Credentials, encryption and Qobuz authentication source code
-- Backend SQLite database settings/migration and downloaded music path handling
-- Update, autostart, and temporary file logic
-- Relevant source files only, plus an inspection report and Git revision
-
-It excludes typical `.env`, token, database, runtime, download and binary files from source collection, and never reads **your** actual AppData, registry or stored credentials. Review the artifact if your fork ever contained secrets committed directly in source code.
-
-## Do not do these things yet
-
-- Do **not** enable automatic portable builds through Universal Fork Sync.
-- Do **not** overwrite your working QBZ portable EXE.
-- Do **not** delete existing QBZ-Data or move your music library.
-
-After source inspection, the builder will be replaced with a verified true-portable version.
+For one-time data migration or checking settings, double-click the matching `.cmd` helper. Each `.cmd` starts its `.ps1` partner.
