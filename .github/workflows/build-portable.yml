@@ -97,12 +97,17 @@ jobs:
         shell: pwsh
         run: npm run desktop:rebuild
 
+      - name: Prepare Electron desktop packaging configuration
+        shell: pwsh
+        run: |
+          python scripts/Prepare-Electron-Packaging.py --source upstream --report artifact/packaging-preflight.txt
+
       - name: Build portable executable (no installer)
         working-directory: upstream
         shell: pwsh
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --win portable --x64 --publish never
+        run: npx electron-builder --config electron-builder.portable.json --win portable --x64 --publish never
 
       - name: Assemble true-portable package
         shell: pwsh
@@ -124,6 +129,8 @@ jobs:
           name: QBZ-Builder-Diagnostics-${{ github.run_id }}
           path: |
             artifact/source-audit.txt
+            artifact/packaging-preflight.txt
+            upstream/electron-builder.portable.json
             upstream/.qbz-portable-patch.json
           if-no-files-found: warn
           retention-days: 30
