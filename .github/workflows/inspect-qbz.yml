@@ -1,0 +1,93 @@
+name: Inspect QBZ-Downloader Portability
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: 'Source repo (leave blank to use YOUR-USERNAME/QBZ-Downloader)'
+        required: false
+        default: ''
+        type: string
+      source_ref:
+        description: 'Source branch or commit (normally main)'
+        required: false
+        default: 'main'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qbz-source-inspection
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    name: QBZ source and storage inspection
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - name: Checkout inspection-builder repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Resolve clean QBZ fork
+        id: source
+        shell: pwsh
+        env:
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = $env:SOURCE_REPOSITORY.Trim()
+          if (-not $repo) { $repo = '${{ github.repository_owner }}/QBZ-Downloader' }
+          $ref = $env:SOURCE_REF.Trim()
+          if (-not $ref) { $ref = 'main' }
+          if ($repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+            throw 'Invalid source repository. Expected OWNER/REPOSITORY.'
+          }
+          "repository=$repo" >> $env:GITHUB_OUTPUT
+          "ref=$ref" >> $env:GITHUB_OUTPUT
+          Write-Host "Inspecting source: $repo at $ref"
+
+      - name: Checkout synced QBZ-Downloader source
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.source.outputs.repository }}
+          ref: ${{ steps.source.outputs.ref }}
+          path: upstream
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Capture exact source revision
+        id: revision
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sha = (git -C upstream rev-parse HEAD).Trim()
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+          Write-Host "Source commit: $sha"
+
+      - name: Install inspection Python (GitHub runner only)
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Inspect code without running QBZ or installing its dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python .\scripts\Inspect-QBZ-Source.py `
+            --source "$env:GITHUB_WORKSPACE\upstream" `
+            --output "$env:GITHUB_WORKSPACE\artifacts\QBZ-Inspection"
+          if ($LASTEXITCODE -ne 0) { throw "Inspection exited with code $LASTEXITCODE" }
+
+      - name: Upload source inspection artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: QBZ-Portable-Inspection-${{ steps.revision.outputs.sha || github.sha }}
+          path: artifacts/QBZ-Inspection/**
+          if-no-files-found: warn
+          retention-days: 30
