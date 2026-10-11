@@ -1,0 +1,147 @@
+name: Build QBZ Downloader PAF-Compatible EXE
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: "Clean QBZ source; blank uses YOUR-USERNAME/QBZ-Downloader"
+        required: false
+        default: ""
+      upstream_ref:
+        description: "Source branch, tag, or commit"
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+# Separate from build-portable.yml so the already-working standalone build
+# is not interrupted or modified.
+concurrency:
+  group: qbz-paf-compatible-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Windows x64 PAF-compatible portable EXE
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Checkout existing portable builder
+        uses: actions/checkout@v4
+
+      - name: Choose clean QBZ source
+        id: source
+        shell: pwsh
+        env:
+          SOURCE_REPO_INPUT: ${{ inputs.upstream_repo }}
+          SOURCE_REF_INPUT: ${{ inputs.upstream_ref }}
+          ACCOUNT_OWNER: ${{ github.repository_owner }}
+        run: |
+          $source = $env:SOURCE_REPO_INPUT
+          if ([string]::IsNullOrWhiteSpace($source)) {
+            $source = "$($env:ACCOUNT_OWNER)/QBZ-Downloader"
+          }
+          $branch = $env:SOURCE_REF_INPUT
+          if ([string]::IsNullOrWhiteSpace($branch)) { $branch = 'main' }
+          "repo=$source" >> $env:GITHUB_OUTPUT
+          "ref=$branch" >> $env:GITHUB_OUTPUT
+          Write-Host "Source: $source @ $branch"
+
+      - name: Checkout clean synced fork
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.source.outputs.repo }}
+          ref: ${{ steps.source.outputs.ref }}
+          path: upstream
+          fetch-depth: 1
+
+      - name: Record source revision
+        id: revision
+        shell: pwsh
+        run: |
+          $sha = (git -C upstream rev-parse HEAD).Trim()
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+          Write-Host "Source commit: $sha"
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: upstream/package-lock.json
+
+      - name: Setup Python for source patching
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install upstream dependencies
+        working-directory: upstream
+        shell: pwsh
+        run: npm ci
+
+      - name: Apply existing true-portable patch and PAF path extension
+        shell: pwsh
+        run: |
+          python scripts/patch_qbz_portable.py --source upstream
+          python scripts/Apply-PAF-Data-Override.py --source upstream
+          python scripts/verify_qbz_source.py --source upstream --report artifact/source-audit.txt
+          python scripts/Verify-PAF-Data-Override.py --source upstream --report artifact/paf-source-audit.txt
+          node --check upstream/electron/main.cjs
+
+      - name: Build upstream frontend and backend
+        working-directory: upstream
+        shell: pwsh
+        run: npm run build:full
+
+      - name: Bundle FFmpeg and fpcalc
+        working-directory: upstream
+        shell: pwsh
+        run: npm run bundle-binaries
+
+      - name: Rebuild native dependencies for Electron
+        working-directory: upstream
+        shell: pwsh
+        run: npm run desktop:rebuild
+
+      - name: Prepare proven Electron packaging configuration
+        shell: pwsh
+        run: |
+          python scripts/Prepare-Electron-Packaging.py --source upstream --report artifact/packaging-preflight.txt
+
+      - name: Build PAF-compatible Windows portable EXE
+        working-directory: upstream
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --config electron-builder.portable.json --win portable --x64 --publish never
+
+      - name: Assemble PAF binary artifact (not a paf.exe installer)
+        shell: pwsh
+        run: |
+          & ./scripts/Assemble-PAF-Binary.ps1 `
+            -SourceRoot "$PWD/upstream" `
+            -OutputRoot "$PWD/artifact/QBZ-PAF-Binary"
+
+      - name: Upload PAF-compatible EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: QBZ-Downloader-PAF-Binary-Windows-x64-${{ steps.revision.outputs.sha }}
+          path: artifact/QBZ-PAF-Binary/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload diagnostic reports even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: QBZ-PAF-Build-Diagnostics-${{ github.run_id }}
+          path: |
+            artifact/source-audit.txt
+            artifact/paf-source-audit.txt
+            artifact/packaging-preflight.txt
+            upstream/.qbz-paf-patch.json
+            upstream/electron-builder.portable.json
+          if-no-files-found: warn
+          retention-days: 30
