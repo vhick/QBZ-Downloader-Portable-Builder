@@ -1,0 +1,129 @@
+name: Build QBZ Downloader True Portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: "Source fork; leave blank for YOUR-USERNAME/QBZ-Downloader"
+        required: false
+        default: ""
+      upstream_ref:
+        description: "Source branch, tag, or commit"
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qbz-true-portable-builder
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Windows x64 portable build
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Checkout portable builder
+        uses: actions/checkout@v4
+
+      - name: Choose clean QBZ source
+        shell: pwsh
+        id: source
+        run: |
+          $source = '${{ inputs.upstream_repo }}'
+          if ([string]::IsNullOrWhiteSpace($source)) {
+            $source = '${{ github.repository_owner }}/QBZ-Downloader'
+          }
+          $branch = '${{ inputs.upstream_ref }}'
+          if ([string]::IsNullOrWhiteSpace($branch)) { $branch = 'main' }
+          "repo=$source" >> $env:GITHUB_OUTPUT
+          "ref=$branch" >> $env:GITHUB_OUTPUT
+          Write-Host "Source: $source @ $branch"
+
+      - name: Checkout clean synced fork
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.source.outputs.repo }}
+          ref: ${{ steps.source.outputs.ref }}
+          path: upstream
+          fetch-depth: 1
+
+      - name: Record source revision
+        shell: pwsh
+        id: revision
+        run: |
+          $sha = (git -C upstream rev-parse HEAD).Trim()
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+          Write-Host "Source commit: $sha"
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: upstream/package-lock.json
+
+      - name: Setup Python for source patches
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install upstream dependencies
+        working-directory: upstream
+        shell: pwsh
+        run: npm ci
+
+      - name: Apply and check true-portable patch
+        shell: pwsh
+        run: |
+          python scripts/patch_qbz_portable.py --source upstream
+          python scripts/verify_qbz_source.py --source upstream --report artifact/source-audit.txt
+          node --check upstream/electron/main.cjs
+
+      - name: Build upstream frontend and backend
+        working-directory: upstream
+        shell: pwsh
+        run: npm run build:full
+
+      - name: Bundle upstream audio tools
+        working-directory: upstream
+        shell: pwsh
+        run: npm run bundle-binaries
+
+      - name: Rebuild native packages for Electron
+        working-directory: upstream
+        shell: pwsh
+        run: npm run desktop:rebuild
+
+      - name: Build portable executable (no installer)
+        working-directory: upstream
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --win portable --x64 --publish never
+
+      - name: Assemble true-portable package
+        shell: pwsh
+        run: |
+          & ./scripts/Assemble-Portable.ps1 -SourceRoot "$PWD/upstream" -KitRoot "$PWD" -OutputRoot "$PWD/artifact/QBZ-Downloader-Portable"
+
+      - name: Upload finished application
+        uses: actions/upload-artifact@v4
+        with:
+          name: QBZ-Downloader-True-Portable-Windows-x64-${{ steps.revision.outputs.sha }}
+          path: artifact/QBZ-Downloader-Portable/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload diagnostic report even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: QBZ-Builder-Diagnostics-${{ github.run_id }}
+          path: |
+            artifact/source-audit.txt
+            upstream/.qbz-portable-patch.json
+          if-no-files-found: warn
+          retention-days: 30
